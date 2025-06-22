@@ -940,10 +940,13 @@ fn action_to_legacy_assets(
 
         let container_path_str = container_path.to_string_lossy();
         let container_path_norm = normalize(&container_path);
-        let folder_norm = normalize(&args.mount_folder);
+        let mount_folder_norm = normalize(&args.mount_folder);
 
-        if container_path_norm.starts_with(&folder_norm) {
-            continue;
+        if container_path_norm.starts_with(&mount_folder_norm) {
+            let relative_path = container_path_norm.strip_prefix(&mount_folder_norm).unwrap();            
+            if relative_path.components().count() == 1 {
+                continue;
+            }
         }
 
         // NEW: Filter based on container file path (e.g. mod_P.utoc)
