@@ -57,12 +57,30 @@ use zen_asset_conversion::ConvertedZenAssetBundle;
 struct ActionManifest {
     #[arg(index = 1)]
     utoc: PathBuf,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subfolders: bool,
+
+    #[arg(long)]
+    mount_folder: PathBuf,
 }
 
 #[derive(Parser, Debug)]
 struct ActionInfo {
     #[arg(index = 1)]
     path: PathBuf,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subfolders: bool,
+
+    #[arg(long)]
+    mount_folder: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -88,6 +106,15 @@ struct ActionList {
     /// Show package store entry
     #[arg(long)]
     store: bool,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subfolders: bool,
+
+    #[arg(long)]
+    mount_folder: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -112,6 +139,15 @@ struct ActionUnpackRaw {
     utoc: PathBuf,
     #[arg(index = 2)]
     output: PathBuf,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subfolders: bool,
+
+    #[arg(long)]
+    mount_folder: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -135,6 +171,18 @@ struct ActionToLegacy {
     #[arg(short, long)]
     filter: Vec<String>,
 
+    /// .utoc file name filter
+    #[arg(long)]
+    file_filter: Vec<String>,
+
+    /// Check any sub folders in the input directory
+    #[arg(long)]
+    check_subfolders : bool,
+
+    /// A folder from which .utoc files are only mounted so that chunks can be resolved
+    #[arg(long)]
+    mount_folder : PathBuf,
+
     /// Skip conversion of assets
     #[arg(long)]
     no_assets: bool,
@@ -144,6 +192,9 @@ struct ActionToLegacy {
     /// Skip compression of shader libraries
     #[arg(long)]
     no_compres_shaders: bool,
+    /// Skip version/header compatibility checks between containers
+    #[arg(long)]
+    no_ver_check: bool,
     /// Do not output any files (dry run). Useful for testing conversion
     #[arg(short, long)]
     dry_run: bool,
@@ -203,6 +254,15 @@ struct ActionGet {
     /// Optional output path or stdout if "-" or omitted
     #[arg(index = 3)]
     output: Option<PathBuf>,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subfolders: bool,
+
+    #[arg(long)]
+    mount_folder: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -213,6 +273,15 @@ struct ActionDumpTest {
     output_dir: PathBuf,
     #[arg(index = 3)]
     package_id: FPackageId,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subfolders: bool,
+
+    #[arg(long)]
+    mount_folder: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -293,7 +362,12 @@ fn main() -> Result<()> {
 }
 
 fn action_manifest(args: ActionManifest, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.utoc, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_folder.exists() {
+        extra_mounts.push(args.mount_folder.clone());
+    }
+
+    let iostore = iostore::open(args.utoc, config, args.no_ver_check, args.check_subfolders, &extra_mounts)?;
 
     let entries = Arc::new(Mutex::new(vec![]));
 
@@ -362,13 +436,21 @@ fn action_manifest(args: ActionManifest, config: Arc<Config>) -> Result<()> {
 }
 
 fn action_info(args: ActionInfo, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.path, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_folder.exists() {
+        extra_mounts.push(args.mount_folder.clone());
+    }
+    let iostore = iostore::open(args.path, config, args.no_ver_check, args.check_subfolders, &extra_mounts)?;
     iostore.print_info(0);
     Ok(())
 }
 
 fn action_list(args: ActionList, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.utoc, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_folder.exists() {
+        extra_mounts.push(args.mount_folder.clone());
+    }
+    let iostore = iostore::open(args.utoc, config, args.no_ver_check, args.check_subfolders, &extra_mounts)?;
 
     let chunks = if args.all {
         iostore.chunks_all()
@@ -581,7 +663,11 @@ mod raw {
 }
 
 fn action_unpack_raw(args: ActionUnpackRaw, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.utoc, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_folder.exists() {
+        extra_mounts.push(args.mount_folder.clone());
+    }
+    let iostore = iostore::open(args.utoc, config, args.no_ver_check, args.check_subfolders, &extra_mounts)?;
 
     let output = args.output;
     let chunks_dir = output.join("chunks");
@@ -807,7 +893,11 @@ fn action_to_legacy_inner(
     file_writer: &dyn FileWriterTrait,
     log: &Log,
 ) -> Result<()> {
-    let iostore = iostore::open(&args.input, config.clone())?;
+    let mut extra_mounts = vec![];
+    if args.mount_folder.exists() {
+        extra_mounts.push(args.mount_folder.clone());
+    }
+    let iostore = iostore::open(&args.input, config.clone(), args.no_ver_check, args.check_subfolders, &extra_mounts)?;
     if !args.no_assets {
         action_to_legacy_assets(&args, file_writer, &*iostore, log)?;
     }
@@ -825,6 +915,10 @@ fn progress_style() -> indicatif::ProgressStyle {
     .progress_chars("##-")
 }
 
+fn normalize(path: &Path) -> PathBuf {
+    path.components().collect()
+}
+
 fn action_to_legacy_assets(
     args: &ActionToLegacy,
     file_writer: &dyn FileWriterTrait,
@@ -833,8 +927,36 @@ fn action_to_legacy_assets(
 ) -> Result<()> {
     let mut packages_to_extract = vec![];
     for package_info in iostore.packages() {
-        let chunk_id =
-            FIoChunkId::from_package_id(package_info.id(), 0, EIoChunkType::ExportBundleData);
+        let chunk_id = FIoChunkId::from_package_id(
+            package_info.id(),
+            0,
+            EIoChunkType::ExportBundleData,
+        );
+
+        // Determine the container (file) path
+        let container_path: PathBuf = iostore
+            .chunk_container_path(chunk_id)
+            .with_context(|| format!("{:?} is not in any container", package_info.id()))?;
+
+        let container_path_str = container_path.to_string_lossy();
+        let container_path_norm = normalize(&container_path);
+        let folder_norm = normalize(&args.mount_folder);
+
+        if container_path_norm.starts_with(&folder_norm) {
+            continue;
+        }
+
+        // NEW: Filter based on container file path (e.g. mod_P.utoc)
+        if !args.file_filter.is_empty()
+            && !args
+                .file_filter
+                .iter()
+                .any(|f| container_path_str.contains(f))
+        {
+            continue;
+        }
+
+        // Get virtual asset path (e.g. /Game/FX/BP/BP_FloatingBall_01.uasset)
         let package_path = iostore.chunk_path(chunk_id).with_context(|| {
             format!(
                 "{:?} has no path name entry. Cannot extract",
@@ -842,6 +964,7 @@ fn action_to_legacy_assets(
             )
         })?;
 
+        // Original asset name filter (e.g. BP_FloatingBall_01)
         if !args.filter.is_empty() && !args.filter.iter().any(|f| package_path.contains(f)) {
             continue;
         }
@@ -1177,7 +1300,11 @@ fn action_to_zen(args: ActionToZen, config: Arc<Config>) -> Result<()> {
 }
 
 fn action_get(args: ActionGet, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.input, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_folder.exists() {
+        extra_mounts.push(args.mount_folder.clone());
+    }
+    let iostore = iostore::open(args.input, config, args.no_ver_check, args.check_subfolders, &extra_mounts)?;
     let data = iostore.read_raw(args.chunk_id)?;
 
     let mut output: Box<dyn Write> = if let Some(output) = args.output {
@@ -1195,7 +1322,11 @@ fn action_get(args: ActionGet, config: Arc<Config>) -> Result<()> {
 }
 
 fn action_dump_test(args: ActionDumpTest, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.input, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_folder.exists() {
+        extra_mounts.push(args.mount_folder.clone());
+    }
+    let iostore = iostore::open(args.input, config, args.no_ver_check, args.check_subfolders, &extra_mounts)?;
 
     let chunk_id = FIoChunkId::from_package_id(args.package_id, 0, EIoChunkType::ExportBundleData);
     let game_path = iostore

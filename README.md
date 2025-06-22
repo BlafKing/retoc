@@ -12,17 +12,39 @@ Commands:
   manifest    Extract manifest from .utoc
   info        Show container info
   list        List fils in .utoc (directory index)
+  verify      Verify IO Store container
   unpack      Extracts chunks (files) from .utoc
+  unpack-raw  Extracts raw chunks from container
+  pack-raw    Packs directory of raw chunks into container
   to-legacy   Converts asests and shaders from Zen to Legacy
   to-zen      Converts assets and shaders from Legacy to Zen
+  get         Get chunk by index and write to stdout
+  dump-test   Dump test
   help        Print this message or the help of the given subcommand(s)
 
 Options:
   -a, --aes-key <AES_KEY>
-  -h, --help               Print help
+
+      --override-container-header-version <OVERRIDE_CONTAINER_HEADER_VERSION>
+          [possible values: PreInitial, Initial, LocalizedPackages, OptionalSegmentPackages, NoExportInfo, SoftPackageReferences]
+      --override-toc-version <OVERRIDE_TOC_VERSION>
+          [possible values: Invalid, Initial, DirectoryIndex, PartitionSize, PerfectHash, PerfectHashWithOverflow, OnDemandMetaData, RemovedOnDemandMetaData, ReplaceIoChunkHashWithIoHash]
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```
 
 ### to-legacy
+
+Custom added options in this fork:
+```
+--file-filter <FILE_FILTER>    .utoc file name filter
+--mount-folder <MOUNT_FOLDER>  A folder from which .utoc files are only mounted so that chunks can be resolved
+--check-subfolders             Check any sub folders in the input directory
+--no-ver-check                 Skip version/header compatibility checks between containers
+```
+
 ```console
 $ ls AbioticFactor/Content/Paks
 global.ucas

@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use fs_err as fs;
+use walkdir::WalkDir;
 
 use crate::{
     Config, EIoChunkType, EIoStoreTocVersion, FIoChunkHash, FIoChunkId, FPackageId, Toc,
@@ -58,9 +59,9 @@ where
     }
 }
 
-pub fn open<P: AsRef<Path>>(path: P, config: Arc<Config>) -> Result<Box<dyn IoStoreTrait>> {
+pub fn open<P: AsRef<Path>>(path: P, config: Arc<Config>, no_ver_check: bool, check_subfolders: bool, mount_folder: &[PathBuf] ) -> Result<Box<dyn IoStoreTrait>> {
     Ok(if path.as_ref().is_dir() {
-        Box::new(IoStoreBackend::open(path, config)?)
+        Box::new(IoStoreBackend::open(path, config, no_ver_check, check_subfolders, mount_folder)?)
     } else {
         Box::new(IoStoreContainer::open(path, config)?)
     })
@@ -104,9 +105,10 @@ pub trait IoStoreTrait: Send + Sync {
     fn child_containers(&self) -> Box<dyn Iterator<Item = &dyn IoStoreTrait> + '_>;
     /// Get absolute path (including mount point) if it has one
     fn chunk_path(&self, chunk_id: FIoChunkId) -> Option<String>;
+    fn chunk_container_path(&self, chunk_id: FIoChunkId) -> Option<PathBuf>;
     fn package_store_entry(&self, package_id: FPackageId) -> Option<StoreEntry>;
     fn lookup_package_redirect(&self, source_package_id: FPackageId) -> Option<FPackageId>;
-
+    
     fn load_script_objects(&self) -> Result<ZenScriptObjects> {
         if self.container_file_version().unwrap() > EIoStoreTocVersion::PerfectHash {
             let script_objects_data =
@@ -197,54 +199,90 @@ impl IoStoreBackend {
     pub fn new() -> Result<Self> {
         Ok(Self { containers: vec![] })
     }
-    pub fn open<P: AsRef<Path>>(dir: P, config: Arc<Config>) -> Result<Self> {
-        let mut containers: Vec<Box<dyn IoStoreTrait>> = vec![];
-        for entry in fs::read_dir(dir.as_ref())? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension() == Some(OsStr::new("utoc")) {
-                containers.push(Box::new(IoStoreContainer::open(path, config.clone())?));
-            }
+    pub fn open<P: AsRef<Path>>(
+        dir: P, 
+        config: Arc<Config>, 
+        no_ver_check: bool, 
+        check_subfolders: bool,
+        mount_folders: &[PathBuf],
+    ) -> Result<Self> {
+        let mut all_paths: Vec<(PathBuf, bool)> = vec![]; // (path, is_mount_only)
+
+        let input_entries: Box<dyn Iterator<Item = PathBuf>> = if check_subfolders {
+            Box::new(
+                WalkDir::new(&dir)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .filter(|e| e.path().extension() == Some(OsStr::new("utoc")))
+                    .map(|e| e.path().to_path_buf()),
+            )
+        } else {
+            Box::new(
+                fs::read_dir(dir.as_ref())?
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| p.extension() == Some(OsStr::new("utoc"))),
+            )
+        };
+        all_paths.extend(input_entries.map(|p| (p, false))); // false = extractable
+
+        for folder in mount_folders {
+            let mount_entries = fs::read_dir(folder)?
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.extension() == Some(OsStr::new("utoc")))
+                .map(|p| (p, true)); // true = mount-only
+
+            all_paths.extend(mount_entries);
         }
+
+        let mut containers: Vec<Box<dyn IoStoreTrait>> = vec![];
+
+        for (path, _is_mount_only) in &all_paths {
+            containers.push(Box::new(IoStoreContainer::open(path, config.clone())?));
+        }
+
         // Validate that all containers are of the same version
-        let mut previous_container_version: Option<EIoStoreTocVersion> = None;
-        let mut previous_container_name: String = String::new();
-        let mut previous_header_container_version: Option<EIoContainerHeaderVersion> = None;
-        let mut previous_header_container_name: String = String::new();
+        if !no_ver_check {
+            let mut previous_container_version: Option<EIoStoreTocVersion> = None;
+            let mut previous_container_name: String = String::new();
+            let mut previous_header_container_version: Option<EIoContainerHeaderVersion> = None;
+            let mut previous_header_container_name: String = String::new();
+            
+            for container in &containers {
+                let this_container_version = container.container_file_version().unwrap();
+                let this_container_name = container.container_name().to_string();
 
-        for container in &containers {
-            let this_container_version = container.container_file_version().unwrap();
-            let this_container_name = container.container_name().to_string();
-
-            // Check that container Table Of Contents version matches the previous container
-            if previous_container_version.is_none() {
-                previous_container_name = this_container_name.clone();
-                previous_container_version = Some(this_container_version);
-            }
-            if this_container_version != previous_container_version.unwrap() {
-                bail!(
-                    "Cannot create composite container for containers of different versions: Container {} and {} have different versions {:?} and {:?}",
-                    previous_container_name,
-                    this_container_name,
-                    previous_container_version.unwrap(),
-                    this_container_version
-                );
-            }
-
-            // Check that container header version matches the previous container
-            if let Some(this_container_header_version) = container.container_header_version() {
-                if previous_header_container_version.is_none() {
-                    previous_header_container_name = this_container_name.clone();
-                    previous_header_container_version = Some(this_container_header_version);
+                // Check that container Table Of Contents version matches the previous container
+                if previous_container_version.is_none() {
+                    previous_container_name = this_container_name.clone();
+                    previous_container_version = Some(this_container_version);
                 }
-                if this_container_header_version != previous_header_container_version.unwrap() {
+                if this_container_version != previous_container_version.unwrap() {
                     bail!(
-                        "Cannot create composite container for containers of different header versions: Container {} and {} have different versions {:?} and {:?}",
-                        previous_header_container_name,
+                        "Cannot create composite container for containers of different versions: Container {} and {} have different versions {:?} and {:?}",
+                        previous_container_name,
                         this_container_name,
-                        previous_header_container_version.unwrap(),
-                        this_container_header_version
+                        previous_container_version.unwrap(),
+                        this_container_version
                     );
+                }
+
+                // Check that container header version matches the previous container
+                if let Some(this_container_header_version) = container.container_header_version() {
+                    if previous_header_container_version.is_none() {
+                        previous_header_container_name = this_container_name.clone();
+                        previous_header_container_version = Some(this_container_header_version);
+                    }
+                    if this_container_header_version != previous_header_container_version.unwrap() {
+                        bail!(
+                            "Cannot create composite container for containers of different header versions: Container {} and {} have different versions {:?} and {:?}",
+                            previous_header_container_name,
+                            this_container_name,
+                            previous_header_container_version.unwrap(),
+                            this_container_header_version
+                        );
+                    }
                 }
             }
         }
@@ -325,6 +363,9 @@ impl IoStoreTrait for IoStoreBackend {
     }
     fn chunk_path(&self, chunk_id: FIoChunkId) -> Option<String> {
         self.containers.iter().find_map(|c| c.chunk_path(chunk_id))
+    }
+    fn chunk_container_path(&self, chunk_id: FIoChunkId) -> Option<PathBuf> {
+        self.containers.iter().find_map(|c| c.chunk_container_path(chunk_id))
     }
     fn package_store_entry(&self, package_id: FPackageId) -> Option<StoreEntry> {
         self.containers
@@ -486,6 +527,13 @@ impl IoStoreTrait for IoStoreContainer {
     }
     fn chunk_path(&self, chunk_id: FIoChunkId) -> Option<String> {
         self.toc.file_name(chunk_id)
+    }
+    fn chunk_container_path(&self, chunk_id: FIoChunkId) -> Option<PathBuf> {
+        if self.has_chunk_id(chunk_id) {
+            Some(self.path.clone())
+        } else {
+            None
+        }
     }
     fn package_store_entry(&self, package_id: FPackageId) -> Option<StoreEntry> {
         self.container_header
