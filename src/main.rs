@@ -181,7 +181,7 @@ struct ActionToLegacy {
 
     /// A folder from which .utoc files are only mounted so that chunks can be resolved
     #[arg(long)]
-    mount_folder : PathBuf,
+    mount_folder: Option<PathBuf>,
 
     /// Skip conversion of assets
     #[arg(long)]
@@ -894,10 +894,12 @@ fn action_to_legacy_inner(
     log: &Log,
 ) -> Result<()> {
     let mut extra_mounts = vec![];
-    if args.mount_folder.exists() {
-        extra_mounts.push(args.mount_folder.clone());
+    if let Some(mount_folder) = &args.mount_folder {
+        if mount_folder.exists() {
+            extra_mounts.push(mount_folder.clone());
+        }
     }
-    let iostore = iostore::open(&args.input, config.clone(), args.no_ver_check, args.check_subfolders, &extra_mounts)?;
+    let iostore: Box<dyn IoStoreTrait + 'static> = iostore::open(&args.input, config.clone(), args.no_ver_check, args.check_subfolders, &extra_mounts)?;
     if !args.no_assets {
         action_to_legacy_assets(&args, file_writer, &*iostore, log)?;
     }
@@ -940,15 +942,16 @@ fn action_to_legacy_assets(
 
         let container_path_str = container_path.to_string_lossy();
         let container_path_norm = normalize(&container_path);
-        let mount_folder_norm = normalize(&args.mount_folder);
+        if let Some(mount_folder) = &args.mount_folder {
+            let mount_folder_norm = normalize(mount_folder);
 
-        if container_path_norm.starts_with(&mount_folder_norm) {
-            let relative_path = container_path_norm.strip_prefix(&mount_folder_norm).unwrap();            
-            if relative_path.components().count() == 1 {
-                continue;
+            if container_path_norm.starts_with(&mount_folder_norm) {
+                let relative_path = container_path_norm.strip_prefix(&mount_folder_norm).unwrap();            
+                if relative_path.components().count() == 1 {
+                    continue;
+                }
             }
         }
-
         // NEW: Filter based on container file path (e.g. mod_P.utoc)
         if !args.file_filter.is_empty()
             && !args
